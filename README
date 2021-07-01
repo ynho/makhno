@@ -1,0 +1,4 @@
+- compile with make
+- put ii executable in .
+- run ./ircio.sh, wait for successful connection
+- run ./qb.sh password
