@@ -67,15 +67,17 @@ static int strstart(char *a, char *b) {
 }
 
 static void addquote (FILE *out, char *msg, char *quote) {
-    char nickname[NICKNAME_SIZE] = {0};
-    char timestamp[32] = {0};
-    copy_nickname (msg, nickname);
-    get_timestamp (msg, timestamp);
-    FILE *q = fopen (QUOTES, "a");
-    fprintf (q, "%s;%s;%s\n", timestamp, nickname, quote);
-    fclose (q);
-    fprintf (out, "/PRIVMSG %s :added quote: %s\n", nickname, quote);
-    fflush (out);
+    if (strlen (quote) > 0) {
+        char nickname[NICKNAME_SIZE] = {0};
+        char timestamp[32] = {0};
+        copy_nickname (msg, nickname);
+        get_timestamp (msg, timestamp);
+        FILE *q = fopen (QUOTES, "a");
+        fprintf (q, "%s;%s;%s\n", timestamp, nickname, quote);
+        fclose (q);
+        fprintf (out, "/PRIVMSG %s :added quote: %s\n", nickname, quote);
+        fflush (out);
+    }
 }
 
 static int count_lines (FILE *q) {
@@ -126,7 +128,6 @@ static void printquote (FILE *out, FILE *q, int n) {
         /* time_t ts = extract_timestamp (buffer); */
         extract_nickname (buffer, nickname);
         char *quote = extract_quote (buffer);
-        printf ("quote : %s\n", quote);
         fprintf (out, "quote %d by %s: %s\n", n + 1, nickname, quote);
         fflush (out);
     } else {
