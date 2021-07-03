@@ -10,7 +10,7 @@
 #define SERVER "irc.libera.chat"
 #define RANDQUOTE_SIZE 1024
 #define NICKNAME_SIZE 64
-#define INTERVAL 10
+#define INTERVAL 45
 
 struct context {
     time_t last_quote;
