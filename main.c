@@ -6,7 +6,7 @@
 #include <unistd.h>
 
 #define QUOTES "quotes"
-#define IRC_CHANNEL "##mako"
+#define IRC_CHANNEL "##politics"
 #define SERVER "irc.libera.chat"
 #define RANDQUOTE_SIZE 1024
 #define NICKNAME_SIZE 64
