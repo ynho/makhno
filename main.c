@@ -63,7 +63,7 @@ static int sflush (char *s) {
 
 static int strstart(char *a, char *b) {
     size_t la = strlen(a) - 1, lb = strlen(b) - 1;
-    return !strncmp(a, b, la < lb ? la : lb);
+    return la >= lb && !strncmp(a, b, lb);
 }
 
 static void addquote (FILE *out, char *msg, char *quote) {
