@@ -136,6 +136,11 @@ static void printquote (FILE *out, FILE *q, int n) {
     }
 }
 
+static void noquotes (struct context *ctx) {
+    fprintf (ctx->channel, "no quotes yet\n");
+    fflush (ctx->channel);
+}
+
 static void randquote (struct context *ctx, char *msg) {
     if (time (NULL) - ctx->last_quote < INTERVAL) {
         if (ctx->print_no) {
@@ -153,16 +158,32 @@ static void randquote (struct context *ctx, char *msg) {
                 int r = randrange (0, lines - 1);
                 printquote (ctx->channel, q, r);
             } else {
-                fprintf (ctx->channel, "no quotes yet\n");
-                fflush (ctx->channel);
+                noquotes (ctx);
             }
             fclose (q);
         } else {
-            fprintf (ctx->channel, "no quotes yet\n");
-            fflush (ctx->channel);
+            noquotes (ctx);
         }
         ctx->last_quote = time (NULL);
         ctx->print_no = 1;
+    }
+}
+
+static void lastquote (struct context *ctx) {
+    if (time (NULL) - ctx->last_quote >= INTERVAL) {
+        FILE *q = NULL;
+        if (q = fopen (QUOTES, "r")) {
+            int lines = count_lines (q);
+            if (lines > 0) {
+                printquote (ctx->channel, q, lines - 1);
+            } else {
+                noquotes (ctx);
+            }
+            fclose (q);
+        } else {
+            noquotes (ctx);
+        }
+        ctx->last_quote = time (NULL);
     }
 }
 
@@ -171,13 +192,14 @@ static void run_cmd (struct context *ctx, char *msg, char *cmd) {
         addquote (ctx->global, msg, &cmd[strlen("!addquote") + 1]);
     } else if (strstart (cmd, "!randquote")) {
         randquote (ctx, msg);
+    } else if (strstart (cmd, "!lastquote")) {
+        lastquote (ctx);
     }
 }
 
 int main (int argc, char **argv)
 {
     char buffer[1024];
-    int run = 1;
     char channel[256], in_path[256], out_path[256];
     FILE *in = NULL, *out = NULL, *global = NULL;
 
@@ -218,19 +240,18 @@ int main (int argc, char **argv)
     ctx.global = global;
     ctx.channel = out;
 
-    while (run) {
+    while (1) {
         clearerr (in);
         memset (buffer, 0, sizeof buffer);
         if (fgets (buffer, sizeof buffer, in)) {
             sflush (buffer);
-            printf ("buf : %s\n", buffer);
             char *cmd = find_message (buffer);
             if (cmd) {
                 run_cmd (&ctx, buffer, cmd);
             }
+        } else {
+            sleep (1);
         }
-        run = 1;
-        sleep (1);
     }
 
     fclose (in);
