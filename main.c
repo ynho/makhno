@@ -77,26 +77,26 @@ static int strstart(char *a, char *b) {
     return strstr (a, b) == a;
 }
 
+static int count_lines (FILE *q) {
+    int count = 0, c;
+    while ((c = fgetc (q)) != EOF)
+        if (c == '\n') count++;
+    return count;
+}
+
 static void addquote (FILE *out, char *msg, char *quote) {
     if (strlen (quote) > 0) {
         char nickname[NICKNAME_SIZE] = {0};
         char timestamp[32] = {0};
         copy_nickname (msg, nickname);
         get_timestamp (msg, timestamp);
-        FILE *q = fopen (QUOTES, "a");
+        FILE *q = fopen (QUOTES, "r+");
+        int number = count_lines (q);
         fprintf (q, "%s;%s;%s\n", timestamp, nickname, quote);
         fclose (q);
-        fprintf (out, "/PRIVMSG %s :added quote: %s\n", nickname, quote);
+        fprintf (out, "/PRIVMSG %s :added quote %d: %s\n", nickname, number + 1, quote);
         fflush (out);
     }
-}
-
-static int count_lines (FILE *q) {
-    int count = 0, c;
-    while ((c = fgetc (q)) != EOF)
-        if (c == '\n') count++;
-    rewind (q);
-    return count;
 }
 
 static int randrange (int a, int b) {
@@ -170,6 +170,7 @@ static void randquote (struct context *ctx, char *msg) {
         FILE *q = NULL;
         if (q = fopen (QUOTES, "r")) {
             int lines = count_lines (q);
+            rewind (q);
             if (lines > 0) {
                 int r = randrange (1, lines);
                 printquote (ctx->channel, q, r);
@@ -190,6 +191,7 @@ static void lastquote (struct context *ctx) {
         FILE *q = NULL;
         if (q = fopen (QUOTES, "r")) {
             int lines = count_lines (q);
+            rewind (q);
             if (lines > 0) {
                 printquote (ctx->channel, q, lines);
             } else {
