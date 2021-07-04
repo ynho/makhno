@@ -4,6 +4,7 @@
 #include <ctype.h>
 #include <time.h>
 #include <unistd.h>
+#include <limits.h>
 
 #ifdef PROD
  #define INTERVAL 45
@@ -24,6 +25,7 @@ struct context {
     time_t last_quote;
     time_t last_search;
     time_t last_wrong_search;
+    time_t last_help;
     int print_no;
     FILE *global;
     FILE *channel;
@@ -135,7 +137,7 @@ static void printquote_from_string (FILE *out, int n, char *string) {
 }
 
 /* n must be between 1 and $(wc -l quotes), included */
-static void printquote (FILE *out, FILE *q, int n) {
+static int printquote (FILE *out, FILE *q, int n) {
     char buffer[QUOTE_SIZE] = {0};
     int count = 0, c;
     while (count < (n - 1) && (c = fgetc (q)) != EOF)
@@ -144,10 +146,9 @@ static void printquote (FILE *out, FILE *q, int n) {
         sflush(buffer);
         /* time_t ts = extract_timestamp (buffer); */
         printquote_from_string (out, n, buffer);
+        return 0;
     } else {
-        printf ("ferror : %d\n", ferror(q));
-        printf ("feof : %d\n", feof(q));
-        printf ("woops\n");
+        return 1;
     }
 }
 
@@ -266,15 +267,50 @@ static void findquote (struct context *ctx, char *pattern) {
     }
 }
 
+static void quote (struct context *ctx, char *arg) {
+    time_t now = time (NULL);
+    if (now - ctx->last_quote >= INTERVAL) {
+        FILE *q = NULL;
+        long n = strtol (arg, NULL, 10);
+        switch (n) {
+        case LONG_MIN:
+        case LONG_MAX:
+        case 0:
+            return;
+        default:
+            if (q = fopen (QUOTES, "r")) {
+                printquote (ctx->channel, q, n);
+                fclose (q);
+            } else
+                noquotes (ctx);
+            ctx->last_quote = now;
+        }
+    }
+}
+
+static void help (struct context *ctx) {
+    time_t now = time (NULL);
+    if (now - ctx->last_help >= INTERVAL) {
+        fprintf (ctx->channel, "commands: !addquote <quote>, !randquote, "
+                 "!lastquote, !findquote <string>, !quote <number>\n");
+        fflush (ctx->channel);
+        ctx->last_help = now;
+    }
+}
+
 static void run_cmd (struct context *ctx, char *msg, char *cmd) {
     if (strstart (cmd, "!addquote")) {
         addquote (ctx->global, msg, &cmd[strlen("!addquote") + 1]);
-    } else if (strstart (cmd, "!randquote")) {
+    } else if (!strcmp (cmd, "!randquote")) {
         randquote (ctx, msg);
-    } else if (strstart (cmd, "!lastquote")) {
+    } else if (!strcmp (cmd, "!lastquote")) {
         lastquote (ctx);
     } else if (strstart (cmd, "!findquote")) {
         findquote (ctx, &cmd[strlen("!findquote") + 1]);
+    } else if (strstart (cmd, "!quote")) {
+        quote (ctx, &cmd[strlen("!quote") + 1]);
+    } else if (!strcmp (cmd, "!help")) {
+        help (ctx);
     }
 }
 
@@ -319,6 +355,7 @@ int main (int argc, char **argv)
     ctx.last_quote = 0;
     ctx.last_search = 0;
     ctx.last_wrong_search = 0;
+    ctx.last_help = 0;
     ctx.print_no = 1;
     ctx.global = global;
     ctx.channel = out;
