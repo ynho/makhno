@@ -129,10 +129,6 @@ static void names (struct context *ctx) {
     }
     if (ctx->n_voiced <= 0)
         printf ("WARNING: no voiced people were added... suspicious\n");
-    printf ("n voiced : %d\n", ctx->n_voiced);
-    for (int i = 0; i < ctx->n_voiced; i++) {
-        printf ("voiced: %s\n", ctx->voiced[i]);
-    }
 }
 
 static int count_lines (FILE *q) {
@@ -390,8 +386,6 @@ static void run_cmd (struct context *ctx, char *msg, char *cmd) {
         quote (ctx, &cmd[strlen("!quote") + 1]);
     } else if (!strcmp (cmd, "!help")) {
         help (ctx);
-    } else if (!strcmp (cmd, "!names")) {
-        names (ctx);
     }
 }
 
