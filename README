@@ -1,4 +1,4 @@
-- compile with make
-- put ii executable in .
-- run ./ircio.sh, wait for successful connection
-- run ./qb.sh password
+* compile with make
+* put ii (https://tools.suckless.org/ii/) executable in .
+* run ./ircio.sh, wait for successful connection
+* run ./qb.sh password
