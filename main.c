@@ -15,12 +15,15 @@
  #define IRC_CHANNEL "##mako"
 #endif
 #define SERVER "irc.libera.chat"
-#define RANDQUOTE_SIZE 1024
+#define QUOTE_SIZE 1024
 #define NICKNAME_SIZE 64
-#define INTERVAL 45
+#define MIN_SEARCH_PATTERN 4
+#define MAX_MATCHES 5
 
 struct context {
     time_t last_quote;
+    time_t last_search;
+    time_t last_wrong_search;
     int print_no;
     FILE *global;
     FILE *channel;
@@ -69,8 +72,7 @@ static int sflush (char *s) {
 }
 
 static int strstart(char *a, char *b) {
-    size_t la = strlen(a) - 1, lb = strlen(b) - 1;
-    return la >= lb && !strncmp(a, b, lb);
+    return strstr (a, b) == a;
 }
 
 static void addquote (FILE *out, char *msg, char *quote) {
@@ -102,13 +104,13 @@ static int randrange (int a, int b) {
     return r + 0.5;
 }
 
-static time_t extract_timestamp(char *str) {
+static time_t extract_timestamp (char *str) {
     char number[32] = {0};
     get_timestamp (str, number);
     return (time_t)strtol(number, NULL, 10);
 }
 
-static void extract_nickname(char *str, char nickname[NICKNAME_SIZE]) {
+static void extract_nickname (char *str, char nickname[NICKNAME_SIZE]) {
     int i = 0;
     while (*str++ != ';');
     while (*str != ';')
@@ -124,19 +126,24 @@ static char* extract_quote (char *str) {
     return str;
 }
 
-static void printquote (FILE *out, FILE *q, int n) {
-    char buffer[RANDQUOTE_SIZE] = {0};
+static void printquote_from_string (FILE *out, int n, char *string) {
     char nickname[NICKNAME_SIZE] = {0};
+    char *quote = extract_quote (string);
+    extract_nickname (string, nickname);
+    fprintf (out, "quote %d by %s: %s\n", n, nickname, quote);
+    fflush (out);
+}
+
+/* n must be between 1 and $(wc -l quotes), included */
+static void printquote (FILE *out, FILE *q, int n) {
+    char buffer[QUOTE_SIZE] = {0};
     int count = 0, c;
-    while (count < n && (c = fgetc (q)) != EOF)
+    while (count < (n - 1) && (c = fgetc (q)) != EOF)
         if (c == '\n') count++;
     if (fgets (buffer, sizeof buffer, q)) {
         sflush(buffer);
         /* time_t ts = extract_timestamp (buffer); */
-        extract_nickname (buffer, nickname);
-        char *quote = extract_quote (buffer);
-        fprintf (out, "quote %d by %s: %s\n", n + 1, nickname, quote);
-        fflush (out);
+        printquote_from_string (out, n, buffer);
     } else {
         printf ("ferror : %d\n", ferror(q));
         printf ("feof : %d\n", feof(q));
@@ -163,7 +170,7 @@ static void randquote (struct context *ctx, char *msg) {
         if (q = fopen (QUOTES, "r")) {
             int lines = count_lines (q);
             if (lines > 0) {
-                int r = randrange (0, lines - 1);
+                int r = randrange (1, lines);
                 printquote (ctx->channel, q, r);
             } else {
                 noquotes (ctx);
@@ -183,7 +190,7 @@ static void lastquote (struct context *ctx) {
         if (q = fopen (QUOTES, "r")) {
             int lines = count_lines (q);
             if (lines > 0) {
-                printquote (ctx->channel, q, lines - 1);
+                printquote (ctx->channel, q, lines);
             } else {
                 noquotes (ctx);
             }
@@ -195,6 +202,70 @@ static void lastquote (struct context *ctx) {
     }
 }
 
+static int match_pattern (char *quote, char *pattern) {
+    return strstr (quote, pattern) != NULL;
+}
+
+static int match (FILE *q, char *pattern, int matches[MAX_MATCHES], int *num, char *last) {
+    int i = 0, line = 1, s;
+    char buffer[QUOTE_SIZE] = {0};
+    *num = 0;
+    while (fgets(buffer, QUOTE_SIZE, q)) {
+        if (match_pattern (extract_quote (buffer), pattern)) {
+            matches[i] = line;
+            s = i;
+            strcpy (last, buffer);
+            i = (i + 1) % MAX_MATCHES;
+            *num = *num + 1;
+        }
+        memset (buffer, 0, sizeof buffer);
+        line++;
+    }
+    return *num <= MAX_MATCHES ? 0 : i;
+}
+
+static void findquote (struct context *ctx, char *pattern) {
+    time_t now = time (NULL);
+    if (now - ctx->last_search >= INTERVAL) {
+        if (strlen (pattern) < MIN_SEARCH_PATTERN) {
+            if (now - ctx->last_wrong_search >= INTERVAL) {
+                fprintf (ctx->channel, "search pattern must contain at least %d characters\n",
+                         MIN_SEARCH_PATTERN);
+                fflush (ctx->channel);
+                ctx->last_wrong_search = now;
+            }
+        } else {
+            FILE *q = NULL;
+            if (q = fopen (QUOTES, "r")) {
+                int matches[MAX_MATCHES], num;
+                char last[QUOTE_SIZE] = {0};
+                for (int i = 0; i < MAX_MATCHES; i++) matches[i] = 0;
+                int first = match (q, pattern, matches, &num, last);
+                if (num > 0) {
+                    if (num > MAX_MATCHES) {
+                        fprintf (ctx->channel, "%d matches, last %d:", num, MAX_MATCHES);
+                        num = MAX_MATCHES;
+                    } else {
+                        fprintf (ctx->channel, "%d matches:", num);
+                    }
+                    for (int i = 0; i < num; i++)
+                        fprintf (ctx->channel, " %d", matches[(i + first) % MAX_MATCHES]);
+                    fprintf (ctx->channel, "\n");
+                    fflush (ctx->channel);
+                    printquote_from_string (ctx->channel, matches[(first + num - 1) % MAX_MATCHES], last);
+                } else {
+                    fprintf (ctx->channel, "pattern not found\n");
+                    fflush (ctx->channel);
+                }
+                fclose (q);
+            } else {
+                noquotes (ctx);
+            }
+            ctx->last_search = now;
+        }
+    }
+}
+
 static void run_cmd (struct context *ctx, char *msg, char *cmd) {
     if (strstart (cmd, "!addquote")) {
         addquote (ctx->global, msg, &cmd[strlen("!addquote") + 1]);
@@ -202,6 +273,8 @@ static void run_cmd (struct context *ctx, char *msg, char *cmd) {
         randquote (ctx, msg);
     } else if (strstart (cmd, "!lastquote")) {
         lastquote (ctx);
+    } else if (strstart (cmd, "!findquote")) {
+        findquote (ctx, &cmd[strlen("!findquote") + 1]);
     }
 }
 
@@ -243,7 +316,9 @@ int main (int argc, char **argv)
     int pos = ftell (in);
 
     struct context ctx;
-    ctx.last_quote = time(NULL) - INTERVAL;
+    ctx.last_quote = 0;
+    ctx.last_search = 0;
+    ctx.last_wrong_search = 0;
     ctx.print_no = 1;
     ctx.global = global;
     ctx.channel = out;
