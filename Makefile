@@ -1,8 +1,16 @@
-OBJS = main.o
-PROG = quotebot
+OBJS_PROD = main_prod.o
+OBJS_TEST = main_test.o
+PROD = quotebot
+TEST = test_quotebot
 
-all: $(PROG)
-$(PROG): $(OBJS) ; $(CC) $(LDFLAGS) $(OBJS) -o $@
-$(OBJS): main.c
-	$(CC) -c $^ -g -o $@
-clean: ; rm -f $(OBJS) $(PROG)
+all: $(PROD) $(TEST)
+$(PROD): $(OBJS_PROD)
+	$(CC) $(LDFLAGS) $(OBJS_PROD) -o $@
+$(TEST): $(OBJS_TEST)
+	$(CC) $(LDFLAGS) $(OBJS_TEST) -o $@
+$(OBJS_PROD): main.c
+	$(CC) -DPROD -c $^ -o $@
+$(OBJS_TEST): main.c
+	$(CC) -g -c $^ -o $@
+
+clean: ; rm -f $(OBJS_PROD) $(OBJS_TEST) $(PROD) $(TEST)

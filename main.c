@@ -5,8 +5,15 @@
 #include <time.h>
 #include <unistd.h>
 
-#define QUOTES "quotes"
-#define IRC_CHANNEL "##politics"
+#ifdef PROD
+ #define INTERVAL 45
+ #define QUOTES "quotes"
+ #define IRC_CHANNEL "##politics"
+#else
+ #define INTERVAL 5
+ #define QUOTES "testquotes"
+ #define IRC_CHANNEL "##mako"
+#endif
 #define SERVER "irc.libera.chat"
 #define RANDQUOTE_SIZE 1024
 #define NICKNAME_SIZE 64
