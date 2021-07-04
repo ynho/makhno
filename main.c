@@ -8,27 +8,36 @@
 
 #ifdef PROD
  #define INTERVAL 45
+ #define NAMES_INTERVAL 60
  #define QUOTES "quotes"
- #define IRC_CHANNEL "##politics"
+ #define CHANNEL "##politics"
+ #define QUERY_NAMES_TIMEOUT 10
 #else
  #define INTERVAL 5
+ #define NAMES_INTERVAL 5
  #define QUOTES "testquotes"
- #define IRC_CHANNEL "##mako"
+ #define CHANNEL "##mako"
+ #define QUERY_NAMES_TIMEOUT 3
 #endif
 #define SERVER "irc.libera.chat"
 #define QUOTE_SIZE 1024
 #define NICKNAME_SIZE 64
 #define MIN_SEARCH_PATTERN 4
 #define MAX_MATCHES 5
+#define NUM_VOICED 100
 
 struct context {
     time_t last_quote;
     time_t last_search;
     time_t last_wrong_search;
     time_t last_help;
+    time_t last_names;
     int print_no;
-    FILE *global;
+    FILE *global_in;
+    FILE *global_out;
     FILE *channel;
+    char voiced[100][NICKNAME_SIZE];
+    int n_voiced;
 };
 
 static char* find_nickname (char *input) {
@@ -77,6 +86,55 @@ static int strstart(char *a, char *b) {
     return strstr (a, b) == a;
 }
 
+static void read_names (struct context *ctx, char *string) {
+    int i = 0, incr = 0;
+    memset (ctx->voiced[ctx->n_voiced], 0, NICKNAME_SIZE);
+    printf ("reading names from %s\n", string);
+    while (*string) {
+        if (*string == '+' || *string == '@') {
+            incr = 1;
+            i = 0;
+            memset (ctx->voiced[ctx->n_voiced], 0, NICKNAME_SIZE);
+        } else if (*string == ' ') {
+            ctx->n_voiced += incr;
+            incr = 0;
+            i = 0;
+        } else if (incr == 1) {
+            ctx->voiced[ctx->n_voiced][i] = *string;
+            i++;
+        }
+        string++;
+    }
+    ctx->n_voiced += incr;
+}
+
+static void names (struct context *ctx) {
+    char buffer[1024] = {0};
+    time_t ts = time(NULL);
+    ctx->n_voiced = 0;
+    fseek (ctx->global_in, 0, SEEK_END);
+    fprintf (ctx->global_out, "/NAMES "CHANNEL"\n");
+    fflush (ctx->global_out);
+    while (time(NULL) - ts < QUERY_NAMES_TIMEOUT) {
+        memset (buffer, 0, sizeof buffer);
+        if (fgets (buffer, sizeof buffer, ctx->global_in)) {
+            sflush (buffer);
+            if (strstart (&buffer[10], " = "CHANNEL" ")) {
+                char *ptr = &buffer[10 + strlen (" = "CHANNEL" ")];
+                read_names (ctx, ptr);
+            } else if (strstart (&buffer[10], " "CHANNEL" End of /NAMES"))
+                break;
+        } else
+            clearerr (ctx->global_in);
+    }
+    if (ctx->n_voiced <= 0)
+        printf ("WARNING: no voiced people were added... suspicious\n");
+    printf ("n voiced : %d\n", ctx->n_voiced);
+    for (int i = 0; i < ctx->n_voiced; i++) {
+        printf ("voiced: %s\n", ctx->voiced[i]);
+    }
+}
+
 static int count_lines (FILE *q) {
     int count = 0, c;
     while ((c = fgetc (q)) != EOF)
@@ -84,18 +142,37 @@ static int count_lines (FILE *q) {
     return count;
 }
 
-static void addquote (FILE *out, char *msg, char *quote) {
+static int authorized (struct context *ctx, char *nickname) {
+    time_t now = time (NULL);
+    if (now - ctx->last_names > NAMES_INTERVAL) {
+        names (ctx);
+        ctx->last_names = now;
+    }
+    for (int i = 0; i < ctx->n_voiced; i++) {
+        if (!strcmp (ctx->voiced[i], nickname))
+            return 1;
+    }
+    return 0;
+}
+
+static void addquote (struct context *ctx, char *msg, char *quote) {
+    FILE *out = ctx->global_out;
     if (strlen (quote) > 0) {
         char nickname[NICKNAME_SIZE] = {0};
         char timestamp[32] = {0};
         copy_nickname (msg, nickname);
-        get_timestamp (msg, timestamp);
-        FILE *q = fopen (QUOTES, "r+");
-        int number = count_lines (q);
-        fprintf (q, "%s;%s;%s\n", timestamp, nickname, quote);
-        fclose (q);
-        fprintf (out, "/PRIVMSG %s :added quote %d: %s\n", nickname, number + 1, quote);
-        fflush (out);
+        if (authorized (ctx, nickname)) {
+            get_timestamp (msg, timestamp);
+            FILE *q = fopen (QUOTES, "r+");
+            int number = count_lines (q);
+            fprintf (q, "%s;%s;%s\n", timestamp, nickname, quote);
+            fclose (q);
+            fprintf (out, "/PRIVMSG %s :added quote %d: %s\n", nickname, number + 1, quote);
+            fflush (out);
+        } else {
+            fprintf (out, "/PRIVMSG %s :only voiced users may add quotes\n", nickname);
+            fflush (out);
+        }
     }
 }
 
@@ -302,7 +379,7 @@ static void help (struct context *ctx) {
 
 static void run_cmd (struct context *ctx, char *msg, char *cmd) {
     if (strstart (cmd, "!addquote")) {
-        addquote (ctx->global, msg, &cmd[strlen("!addquote") + 1]);
+        addquote (ctx, msg, &cmd[strlen("!addquote") + 1]);
     } else if (!strcmp (cmd, "!randquote")) {
         randquote (ctx, msg);
     } else if (!strcmp (cmd, "!lastquote")) {
@@ -313,6 +390,8 @@ static void run_cmd (struct context *ctx, char *msg, char *cmd) {
         quote (ctx, &cmd[strlen("!quote") + 1]);
     } else if (!strcmp (cmd, "!help")) {
         help (ctx);
+    } else if (!strcmp (cmd, "!names")) {
+        names (ctx);
     }
 }
 
@@ -320,28 +399,30 @@ int main (int argc, char **argv)
 {
     char buffer[1024];
     char channel[256], in_path[256], out_path[256];
-    FILE *in = NULL, *out = NULL, *global = NULL;
+    FILE *in = NULL, *out = NULL, *global_in = NULL, *global_out = NULL;
 
-    strcpy (channel, IRC_CHANNEL);
+    strcpy (channel, CHANNEL);
 
     sprintf (in_path, SERVER "/%s/out", channel);
     sprintf (out_path, SERVER "/%s/in", channel);
 
-    if (!(global = fopen (SERVER "/in", "w"))) {
+    if (!(global_out = fopen (SERVER "/in", "w"))) {
         perror ("fopen " SERVER "/in");
+        return 1;
+    }
+    if (!(global_in = fopen (SERVER "/out", "r"))) {
+        perror ("fopen " SERVER "/out");
         return 1;
     }
 
     /* join channel */
-    if (!(in = fopen (in_path, "r"))) {
-        fprintf (global, "/j %s\n", channel);
-        fflush (global);
+    fprintf (global_out, "/j %s\n", channel);
+    fflush (global_out);
 
-        /* wait for ii to create the files and such */
-        sleep (3);
-        in = fopen (in_path, "r");
-    }
+    /* wait for ii to create the files and such */
+    sleep (3);
 
+    in = fopen (in_path, "r");
     out = fopen (out_path, "w");
 
     if (!in || !out) {
@@ -358,9 +439,12 @@ int main (int argc, char **argv)
     ctx.last_search = 0;
     ctx.last_wrong_search = 0;
     ctx.last_help = 0;
+    ctx.last_names = 0;
     ctx.print_no = 1;
-    ctx.global = global;
+    ctx.global_in = global_in;
+    ctx.global_out = global_out;
     ctx.channel = out;
+    ctx.n_voiced = 0;
 
     while (1) {
         clearerr (in);
