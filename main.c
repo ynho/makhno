@@ -22,7 +22,7 @@
 #define SERVER "irc.libera.chat"
 #define QUOTE_SIZE 1024
 #define NICKNAME_SIZE 64
-#define MIN_SEARCH_PATTERN 4
+#define MIN_SEARCH_PATTERN 3
 #define MAX_MATCHES 5
 #define NUM_VOICED 100
 
@@ -186,11 +186,12 @@ static time_t extract_timestamp (char *str) {
     return (time_t)strtol(number, NULL, 10);
 }
 
-static void extract_nickname (char *str, char nickname[NICKNAME_SIZE]) {
+static char* extract_nickname (char *str, char nickname[NICKNAME_SIZE]) {
     int i = 0;
     while (*str++ != ';');
     while (*str != ';')
         nickname[i++] = *str++;
+    return nickname;
 }
 
 static char* extract_quote (char *str) {
@@ -306,12 +307,20 @@ static int match_pattern (char *quote, char *pattern) {
     return strstr (quote, pattern) != NULL;
 }
 
-static int match (FILE *q, char *pattern, int matches[MAX_MATCHES], int *num, char *last) {
+static char* tolowers (char *s) {
+    for (int i = 0; s[i]; i++)
+        s[i] = tolower (s[i]);
+    return s;
+}
+
+static int match (FILE *q, char *pattern, int matches[MAX_MATCHES], int *num, char *last, int author) {
     int i = 0, line = 1, s;
     char buffer[QUOTE_SIZE] = {0};
     *num = 0;
-    while (fgets(buffer, QUOTE_SIZE, q)) {
-        if (match_pattern (extract_quote (buffer), pattern)) {
+    while (fgets (buffer, QUOTE_SIZE, q)) {
+        char nickname[NICKNAME_SIZE] = {0};
+        char *extract = author ? extract_nickname (buffer, nickname) : extract_quote (buffer);
+        if (match_pattern (tolowers (extract), pattern)) {
             matches[i] = line;
             s = i;
             strcpy (last, buffer);
@@ -324,7 +333,7 @@ static int match (FILE *q, char *pattern, int matches[MAX_MATCHES], int *num, ch
     return *num <= MAX_MATCHES ? 0 : i;
 }
 
-static void findquote (struct context *ctx, char *pattern) {
+static void findquote (struct context *ctx, char *pattern, int author) {
     time_t now = time (NULL);
     if (now - ctx->last_search >= INTERVAL) {
         if (strlen (pattern) < MIN_SEARCH_PATTERN) {
@@ -340,7 +349,8 @@ static void findquote (struct context *ctx, char *pattern) {
                 int matches[MAX_MATCHES], num;
                 char last[QUOTE_SIZE] = {0};
                 for (int i = 0; i < MAX_MATCHES; i++) matches[i] = 0;
-                int first = match (q, pattern, matches, &num, last);
+                tolowers (pattern);
+                int first = match (q, pattern, matches, &num, last, author);
                 if (num > 0) {
                     if (num > MAX_MATCHES) {
                         fprintf (ctx->channel, "%d matches, last %d:", num, MAX_MATCHES);
@@ -427,7 +437,9 @@ static void run_cmd (struct context *ctx, char *msg, char *cmd) {
     } else if (!strcmp (cmd, "!lastquote")) {
         lastquote (ctx);
     } else if (strstart (cmd, "!findquote")) {
-        findquote (ctx, &cmd[strlen("!findquote") + 1]);
+        findquote (ctx, &cmd[strlen("!findquote") + 1], 0);
+    } else if (strstart (cmd, "!findauthor")) {
+        findquote (ctx, &cmd[strlen("!findauthor") + 1], 1);
     } else if (strstart (cmd, "!quote")) {
         quote (ctx, &cmd[strlen("!quote") + 1]);
     } else if (!strcmp (cmd, "!help")) {
