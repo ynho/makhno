@@ -32,6 +32,7 @@ struct context {
     time_t last_wrong_search;
     time_t last_help;
     time_t last_names;
+    time_t last_when;
     int print_no;
     FILE *global_in;
     FILE *global_out;
@@ -216,9 +217,32 @@ static int printquote (FILE *out, FILE *q, int n) {
     while (count < (n - 1) && (c = fgetc (q)) != EOF)
         if (c == '\n') count++;
     if (fgets (buffer, sizeof buffer, q)) {
-        sflush(buffer);
-        /* time_t ts = extract_timestamp (buffer); */
+        sflush (buffer);
         printquote_from_string (out, n, buffer);
+        return 0;
+    } else {
+        return 1;
+    }
+}
+
+static void printts (FILE *out, int n, time_t ts) {
+    char buf[64] = {0};
+    struct tm t;
+    gmtime_r (&ts, &t);
+    strftime (buf, sizeof buf, "%F %T", &t);
+    fprintf (out, "%s GMT\n", buf);
+    fflush (out);
+}
+
+static int printquotets (FILE *out, FILE *q, int n) {
+    char buffer[QUOTE_SIZE] = {0};
+    int count = 0, c;
+    while (count < (n - 1) && (c = fgetc (q)) != EOF)
+        if (c == '\n') count++;
+    if (fgets (buffer, sizeof buffer, q)) {
+        sflush(buffer);
+        time_t ts = extract_timestamp (buffer);
+        printts (out, n, ts);
         return 0;
     } else {
         return 1;
@@ -363,11 +387,33 @@ static void quote (struct context *ctx, char *arg) {
     }
 }
 
+static void when (struct context *ctx, char *arg) {
+    time_t now = time (NULL);
+    if (now - ctx->last_when >= INTERVAL) {
+        FILE *q = NULL;
+        long n = strtol (arg, NULL, 10);
+        switch (n) {
+        case LONG_MIN:
+        case LONG_MAX:
+        case 0:
+            return;
+        default:
+            if (q = fopen (QUOTES, "r")) {
+                printquotets (ctx->channel, q, n);
+                fclose (q);
+            } else
+                noquotes (ctx);
+            ctx->last_when = now;
+        }
+    }
+}
+
 static void help (struct context *ctx) {
     time_t now = time (NULL);
     if (now - ctx->last_help >= INTERVAL) {
         fprintf (ctx->channel, "commands: !addquote <quote>, !randquote, "
-                 "!lastquote, !findquote <string>, !quote <number>\n");
+                 "!lastquote, !findquote <string>, !quote <number>, !when <number>,"
+                 "!findauthor <nick>\n");
         fflush (ctx->channel);
         ctx->last_help = now;
     }
@@ -386,11 +432,12 @@ static void run_cmd (struct context *ctx, char *msg, char *cmd) {
         quote (ctx, &cmd[strlen("!quote") + 1]);
     } else if (!strcmp (cmd, "!help")) {
         help (ctx);
+    } else if (strstart (cmd, "!when")) {
+        when (ctx, &cmd[strlen("!when") + 1]);
     }
 }
 
-int main (int argc, char **argv)
-{
+int main (int argc, char **argv) {
     char buffer[1024];
     char channel[256], in_path[256], out_path[256];
     FILE *in = NULL, *out = NULL, *global_in = NULL, *global_out = NULL;
@@ -434,6 +481,7 @@ int main (int argc, char **argv)
     ctx.last_wrong_search = 0;
     ctx.last_help = 0;
     ctx.last_names = 0;
+    ctx.last_when = 0;
     ctx.print_no = 1;
     ctx.global_in = global_in;
     ctx.global_out = global_out;
