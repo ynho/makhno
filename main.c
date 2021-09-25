@@ -316,11 +316,13 @@ static char* tolowers (char *s) {
 static int match (FILE *q, char *pattern, int matches[MAX_MATCHES], int *num, char *last, int author) {
     int i = 0, line = 1, s;
     char buffer[QUOTE_SIZE] = {0};
+    char decap[QUOTE_SIZE] = {0};
     *num = 0;
     while (fgets (buffer, QUOTE_SIZE, q)) {
         char nickname[NICKNAME_SIZE] = {0};
         char *extract = author ? extract_nickname (buffer, nickname) : extract_quote (buffer);
-        if (match_pattern (tolowers (extract), pattern)) {
+        strcpy (decap, extract);
+        if (match_pattern (tolowers (decap), pattern)) {
             matches[i] = line;
             s = i;
             strcpy (last, buffer);
