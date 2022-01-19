@@ -13,8 +13,8 @@
  #define CHANNEL "##politics"
  #define QUERY_NAMES_TIMEOUT 10
 #else
- #define INTERVAL 5
- #define NAMES_INTERVAL 5
+ #define INTERVAL 1
+ #define NAMES_INTERVAL 1
  #define QUOTES "testquotes"
  #define CHANNEL "##mako"
  #define QUERY_NAMES_TIMEOUT 3
@@ -152,24 +152,50 @@ static int authorized (struct context *ctx, char *nickname) {
     return 0;
 }
 
+static long extract_number (char *str) {
+    char number[32] = {0};
+    get_timestamp (str, number);
+    return strtol(number, NULL, 10);
+}
+
+static int getlinen (FILE *q, int n, char buffer[QUOTE_SIZE]) {
+    int count = 0, c;
+    while (count < (n - 1) && (c = fgetc (q)) != EOF)
+        if (c == '\n') count++;
+    if (fgets (buffer, QUOTE_SIZE, q)) {
+        sflush (buffer);
+        return 1;
+    } else
+        return 0;
+}
+
 static void addquote (struct context *ctx, char *msg, char *quote) {
     FILE *out = ctx->global_out;
     if (strlen (quote) > 0) {
         char nickname[NICKNAME_SIZE] = {0};
         char timestamp[32] = {0};
         copy_nickname (msg, nickname);
+#ifdef PROD
         if (authorized (ctx, nickname)) {
+#endif
             get_timestamp (msg, timestamp);
             FILE *q = fopen (QUOTES, "r+");
-            int number = count_lines (q);
-            fprintf (q, "%s;%s;%s\n", timestamp, nickname, quote);
+            long nb = 1;
+            char buffer[QUOTE_SIZE] = {0};
+            int n_lines = count_lines (q);
+            rewind (q);
+            if (getlinen (q, n_lines, buffer))
+                nb = extract_number (buffer) + 1;
+            fprintf (q, "%d;%s;%s;%s\n", nb, timestamp, nickname, quote);
             fclose (q);
-            fprintf (out, "/PRIVMSG %s :added quote %d: %s\n", nickname, number + 1, quote);
+            fprintf (out, "/PRIVMSG %s :added quote %d: %s\n", nickname, nb, quote);
             fflush (out);
+#ifdef PROD
         } else {
             fprintf (out, "/PRIVMSG %s :only voiced users may add quotes\n", nickname);
             fflush (out);
         }
+#endif
     }
 }
 
@@ -180,27 +206,42 @@ static int randrange (int a, int b) {
     return r + 0.5;
 }
 
-static time_t extract_timestamp (char *str) {
-    char number[32] = {0};
-    get_timestamp (str, number);
-    return (time_t)strtol(number, NULL, 10);
+static char* goto_field (char *str, int field) {
+    for (int i = 0; i < field; i++) {
+        while (*str != ';' && *str != 0) str++;
+        if (*str != 0)
+            str++;
+    }
+    return str;
 }
+
+static time_t extract_timestamp (char *str) {
+    str = goto_field (str, 1);
+    return (time_t)extract_number (str);
+}
+
 
 static char* extract_nickname (char *str, char nickname[NICKNAME_SIZE]) {
     int i = 0;
-    while (*str++ != ';');
+    str = goto_field (str, 2);
     while (*str != ';')
         nickname[i++] = *str++;
     return nickname;
 }
 
 static char* extract_quote (char *str) {
-    for (int i = 0; i < 2; i++) {
-        while (*str != ';' && *str != 0) str++;
-        if (*str != 0)
-            str++;
+    return goto_field (str, 3);
+}
+
+static int fetchquote (FILE *q, int n, char buffer[QUOTE_SIZE]) {
+    while (fgets (buffer, QUOTE_SIZE, q)) {
+        long nb = extract_number(buffer);
+        if (n == nb) {
+            sflush (buffer);
+            return 1;
+        }
     }
-    return str;
+    return 0;
 }
 
 static void printquote_from_string (FILE *out, int n, char *string) {
@@ -212,13 +253,21 @@ static void printquote_from_string (FILE *out, int n, char *string) {
 }
 
 /* n must be between 1 and $(wc -l quotes), included */
-static int printquote (FILE *out, FILE *q, int n) {
+static int printquotel (FILE *out, FILE *q, int n) {
     char buffer[QUOTE_SIZE] = {0};
-    int count = 0, c;
-    while (count < (n - 1) && (c = fgetc (q)) != EOF)
-        if (c == '\n') count++;
-    if (fgets (buffer, sizeof buffer, q)) {
-        sflush (buffer);
+    if (getlinen (q, n, buffer)) {
+        long nb = extract_number (buffer);
+        printquote_from_string (out, nb, buffer);
+        return 0;
+    } else {
+        return 1;
+    }
+}
+
+/* n must be an existing quote ID */
+static int printquoten (FILE *out, FILE *q, int n) {
+    char buffer[QUOTE_SIZE] = {0};
+    if (fetchquote (q, n, buffer)) {
         printquote_from_string (out, n, buffer);
         return 0;
     } else {
@@ -237,11 +286,7 @@ static void printts (FILE *out, int n, time_t ts) {
 
 static int printquotets (FILE *out, FILE *q, int n) {
     char buffer[QUOTE_SIZE] = {0};
-    int count = 0, c;
-    while (count < (n - 1) && (c = fgetc (q)) != EOF)
-        if (c == '\n') count++;
-    if (fgets (buffer, sizeof buffer, q)) {
-        sflush(buffer);
+    if (fetchquote (q, n, buffer)) {
         time_t ts = extract_timestamp (buffer);
         printts (out, n, ts);
         return 0;
@@ -271,7 +316,7 @@ static void randquote (struct context *ctx, char *msg) {
             rewind (q);
             if (lines > 0) {
                 int r = randrange (1, lines);
-                printquote (ctx->channel, q, r);
+                printquotel (ctx->channel, q, r);
             } else {
                 noquotes (ctx);
             }
@@ -291,7 +336,7 @@ static void lastquote (struct context *ctx) {
             int lines = count_lines (q);
             rewind (q);
             if (lines > 0) {
-                printquote (ctx->channel, q, lines);
+                printquotel (ctx->channel, q, lines);
             } else {
                 noquotes (ctx);
             }
@@ -314,23 +359,23 @@ static char* tolowers (char *s) {
 }
 
 static int match (FILE *q, char *pattern, int matches[MAX_MATCHES], int *num, char *last, int author) {
-    int i = 0, line = 1, s;
+    int i = 0, s;
     char buffer[QUOTE_SIZE] = {0};
     char decap[QUOTE_SIZE] = {0};
     *num = 0;
     while (fgets (buffer, QUOTE_SIZE, q)) {
         char nickname[NICKNAME_SIZE] = {0};
         char *extract = author ? extract_nickname (buffer, nickname) : extract_quote (buffer);
+        int number = extract_number (buffer);
         strcpy (decap, extract);
         if (match_pattern (tolowers (decap), pattern)) {
-            matches[i] = line;
+            matches[i] = number;
             s = i;
             strcpy (last, buffer);
             i = (i + 1) % MAX_MATCHES;
             *num = *num + 1;
         }
         memset (buffer, 0, sizeof buffer);
-        line++;
     }
     return *num <= MAX_MATCHES ? 0 : i;
 }
@@ -390,7 +435,7 @@ static void quote (struct context *ctx, char *arg) {
             return;
         default:
             if (q = fopen (QUOTES, "r")) {
-                printquote (ctx->channel, q, n);
+                printquoten (ctx->channel, q, n);
                 fclose (q);
             } else
                 noquotes (ctx);
