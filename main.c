@@ -6,18 +6,26 @@
 #include <unistd.h>
 #include <limits.h>
 
+#define SELF "makhno"
+
 #ifdef PROD
  #define INTERVAL 45
- #define NAMES_INTERVAL 60
+ #define NAMES_INTERVAL 2
  #define QUOTES "quotes"
  #define CHANNEL "##politics"
  #define QUERY_NAMES_TIMEOUT 10
+ #define QUERY_WHOIS_TIMEOUT 5
+ #define MIN_VOTES_TO_DELETE 3
+ #define VOTE_DURATION 120
 #else
  #define INTERVAL 1
  #define NAMES_INTERVAL 1
  #define QUOTES "testquotes"
  #define CHANNEL "##mako"
  #define QUERY_NAMES_TIMEOUT 3
+ #define QUERY_WHOIS_TIMEOUT 7
+ #define MIN_VOTES_TO_DELETE 1
+ #define VOTE_DURATION 7
 #endif
 #define SERVER "irc.libera.chat"
 #define QUOTE_SIZE 1024
@@ -25,6 +33,7 @@
 #define MIN_SEARCH_PATTERN 3
 #define MAX_MATCHES 5
 #define NUM_VOICED 100
+#define MAX_VOTES 1000
 
 struct context {
     time_t last_quote;
@@ -39,6 +48,11 @@ struct context {
     FILE *channel;
     char voiced[100][NICKNAME_SIZE];
     int n_voiced;
+
+    time_t vote_ts;
+    int vote_quote;
+    char votes[2][MAX_VOTES][NICKNAME_SIZE];
+    size_t n_votes[2];
 };
 
 static char* find_nickname (char *input) {
@@ -58,10 +72,11 @@ static int copy_nickname (char *input, char *output) {
     return 1;
 }
 
-static void get_timestamp (char *msg, char *number) {
+static int get_timestamp (char *msg, char *number) {
     int i = 0;
     while (*msg <= '9' && *msg >= '0')
         number[i++] = *msg++;
+    return i;
 }
 
 static char* find_message (char *input) {
@@ -83,14 +98,13 @@ static int sflush (char *s) {
     }
 }
 
-static int strstart(char *a, char *b) {
+static int strstart (char *a, char *b) {
     return strstr (a, b) == a;
 }
 
 static void read_names (struct context *ctx, char *string) {
     int i = 0, incr = 0;
     memset (ctx->voiced[ctx->n_voiced], 0, NICKNAME_SIZE);
-    printf ("reading names from %s\n", string);
     while (*string) {
         if (*string == '+' || *string == '@') {
             incr = 1;
@@ -152,10 +166,21 @@ static int authorized (struct context *ctx, char *nickname) {
     return 0;
 }
 
-static long extract_number (char *str) {
+static long extract_number_ (char *str, int *success) {
     char number[32] = {0};
-    get_timestamp (str, number);
-    return strtol(number, NULL, 10);
+    if (get_timestamp (str, number) > 0) {
+        if (success)
+            *success = 1;
+        return strtol (number, NULL, 10);
+    } else {
+        if (success)
+            *success = 0;
+        return 0;
+    }
+}
+
+static long extract_number (char *str) {
+    return extract_number_ (str, NULL);
 }
 
 static int getlinen (FILE *q, int n, char buffer[QUOTE_SIZE]) {
@@ -233,15 +258,17 @@ static char* extract_quote (char *str) {
     return goto_field (str, 3);
 }
 
-static int fetchquote (FILE *q, int n, char buffer[QUOTE_SIZE]) {
+static long fetchquote (FILE *q, int n, char buffer[QUOTE_SIZE]) {
+    long p = ftell (q);
     while (fgets (buffer, QUOTE_SIZE, q)) {
-        long nb = extract_number(buffer);
+        long nb = extract_number (buffer);
         if (n == nb) {
             sflush (buffer);
-            return 1;
+            return p;
         }
+        p = ftell (q);
     }
-    return 0;
+    return -1;
 }
 
 static void printquote_from_string (FILE *out, int n, char *string) {
@@ -267,7 +294,7 @@ static int printquotel (FILE *out, FILE *q, int n) {
 /* n must be an existing quote ID */
 static int printquoten (FILE *out, FILE *q, int n) {
     char buffer[QUOTE_SIZE] = {0};
-    if (fetchquote (q, n, buffer)) {
+    if (fetchquote (q, n, buffer) >= 0) {
         printquote_from_string (out, n, buffer);
         return 0;
     } else {
@@ -286,7 +313,7 @@ static void printts (FILE *out, int n, time_t ts) {
 
 static int printquotets (FILE *out, FILE *q, int n) {
     char buffer[QUOTE_SIZE] = {0};
-    if (fetchquote (q, n, buffer)) {
+    if (fetchquote (q, n, buffer) >= 0) {
         time_t ts = extract_timestamp (buffer);
         printts (out, n, ts);
         return 0;
@@ -465,12 +492,194 @@ static void when (struct context *ctx, char *arg) {
     }
 }
 
+static int running_vote (struct context *ctx) {
+    return time (NULL) - ctx->vote_ts < VOTE_DURATION;
+}
+
+static int logged (struct context *ctx, char nickname[NICKNAME_SIZE], char id[NICKNAME_SIZE]) {
+    char buffer[QUOTE_SIZE] = {0};
+    time_t ts = time (NULL);
+    fseek (ctx->global_in, 0, SEEK_END);
+    fprintf (ctx->global_out, "/WHOIS %s\n", nickname);
+    fflush (ctx->global_out);
+    while (time (NULL) - ts < QUERY_WHOIS_TIMEOUT) {
+        memset (buffer, 0, sizeof buffer);
+        if (fgets (buffer, sizeof buffer, ctx->global_in)) {
+            sflush (buffer);
+            char *pos = strstr (&buffer[10], "is logged in as");
+            if (pos) {
+                size_t skip = 12 + strlen (nickname);
+                int i = 0;
+                while (buffer[skip + i] != ' ') {
+                    id[i] = buffer[skip + i];
+                    i++;
+                }
+                id[i] = 0;
+                return 1;
+            }
+        } else
+            clearerr (ctx->global_in);
+    }
+    return 0;
+}
+
+static void votedel (struct context *ctx, char *msg, char *quote) {
+    FILE *out = ctx->global_out;
+    if (strlen (quote) > 0) {
+        char nickname[NICKNAME_SIZE] = {0};
+        char id[NICKNAME_SIZE] = {0};
+        copy_nickname (msg, nickname);
+#ifdef PROD
+        if (!authorized (ctx, nickname)) {
+            fprintf (out, "/PRIVMSG %s :must be voiced to start votes\n", nickname);
+            fflush (out);
+            return;
+        }
+#endif
+        if (!logged (ctx, nickname, id)) {
+            fprintf (out, "/PRIVMSG %s :you must be logged with nickserv to start a vote\n",
+                     nickname);
+            fflush (out);
+            return;
+        }
+        if (running_vote (ctx)) {
+            fprintf (out, "/PRIVMSG %s :a vote is currently in progress, retry in %d seconds\n",
+                     nickname, ctx->vote_ts + VOTE_DURATION - time (NULL));
+            fflush (out);
+            return;
+        }
+        int success;
+        int n = extract_number_ (quote, &success);
+        char buffer[QUOTE_SIZE] = {0};
+        if (!success) {
+            fprintf (out, "/PRIVMSG %s :does that look like a number to you\n",
+                     nickname, n);
+            fflush (out);
+            return;
+        }
+        FILE *q = fopen (QUOTES, "r");
+        if (!q) {
+            noquotes (ctx);
+            return;             /* :/ */
+        }
+        if (fetchquote (q, n, buffer) < 0) {
+            fprintf (out, "/PRIVMSG %s :quote %d does not exist\n",
+                     nickname, n);
+            fflush (out);
+            return;
+        }
+        ctx->vote_ts = time (NULL);
+        ctx->vote_quote = n;
+        ctx->n_votes[0] = ctx->n_votes[1] = 0;
+        fprintf (ctx->channel, "%s has called a vote to delete quote %d. Type !yes or !no "
+                 "to cast your vote. The quote will be "
+                 "deleted if it receives a majority with at least %d in favor. Vote will remain"
+                 " open for %d seconds.\n",
+                 nickname, n, MIN_VOTES_TO_DELETE, VOTE_DURATION);
+        fflush (ctx->channel);
+    }
+}
+
+static int voter_exists (struct context *ctx, char *id) {
+    for (int y = 0; y < 2; y++) {
+        for (int i = 0; i < ctx->n_votes[y]; i++) {
+            fprintf (ctx->channel, "comparing [%d] %s with %s\n", i, ctx->votes[y][i], id);
+            fflush (ctx->channel);
+            if (!strcmp (ctx->votes[y][i], id))
+                return 1;
+        }
+    }
+    return 0;
+}
+
+static void cast_vote (struct context *ctx, char *msg, int which) {
+    char nickname[NICKNAME_SIZE] = {0};
+    char id[NICKNAME_SIZE] = {0};
+    FILE *out = ctx->global_out;
+    copy_nickname (msg, nickname);
+    printf ("casting vote...\n");
+#if 0
+#ifdef PROD
+    if (!authorized (ctx, nickname)) {
+        fprintf (out, "/PRIVMSG %s :only voiced users may vote\n", nickname);
+        fflush (out);
+        return;
+    }
+#endif
+#endif
+    if (!logged (ctx, nickname, id)) {
+        fprintf (out, "/PRIVMSG %s :you must be logged with nickserv to vote\n",
+                 nickname);
+        fflush (out);
+        return;
+    }
+    if (running_vote (ctx)) {
+        if (voter_exists (ctx, id)) {
+            fprintf (out, "/PRIVMSG %s :you already voted, but nice try.\n", nickname);
+            fflush (out);
+        } else {
+            strcpy (ctx->votes[which][ctx->n_votes[which]], id);
+            ctx->n_votes[which]++;
+            fprintf (out, "/PRIVMSG %s :you voted %s\n", nickname, which ? "yes" : "no");
+            fflush (out);
+        }
+    }
+}
+
+static void delete_quote (struct context *ctx, int n) {
+    FILE *q = NULL;
+    char buffer[QUOTE_SIZE] = {0};
+    if (q = fopen (QUOTES, "r")) {
+        long pos = fetchquote (q, n, buffer);
+        if (pos < 0) {
+            fprintf (stderr, "ERROR: couldnt find the quote we are supposed to delete... "
+                     "that shouldnt happen\n");
+            return;
+        }
+        fseek (q, 0, SEEK_END);
+        long size = ftell (q);
+        char *tmp = malloc (size + 1);
+        long i;
+        rewind (q);
+        for (i = 0; i < pos; i++)
+            tmp[i] = fgetc (q);
+        while (fgetc (q) != '\n');
+        int c;
+        while ((c = fgetc (q)) != EOF)
+            tmp[i++] = c;
+        long written = i;
+        tmp[i] = 0;
+        fclose (q);
+        q = fopen (QUOTES, "w");
+        fputs (tmp, q);
+        fclose (q);
+    }
+}
+
+static void end_vote (struct context *ctx) {
+    if (ctx->vote_quote) {
+        if (!running_vote (ctx)) {
+            if (ctx->n_votes[1] >= MIN_VOTES_TO_DELETE &&
+                ctx->n_votes[1] > ctx->n_votes[0]) {
+                delete_quote (ctx, ctx->vote_quote);
+                fprintf (ctx->channel, "vote passed, quote %d deleted\n", ctx->vote_quote);
+                fflush (ctx->channel);
+            } else {
+                fprintf (ctx->channel, "vote failed, quote %d remains\n", ctx->vote_quote);
+                fflush (ctx->channel);
+            }
+            ctx->vote_quote = 0;
+            ctx->n_votes[0] = ctx->n_votes[1] = 0;
+        }
+    }
+}
+
 static void help (struct context *ctx) {
     time_t now = time (NULL);
     if (now - ctx->last_help >= INTERVAL) {
         fprintf (ctx->channel, "commands: !addquote <quote>, !randquote, "
-                 "!lastquote, !findquote <string>, !quote <number>, !when <number>,"
-                 "!findauthor <nick>\n");
+                 "!lastquote, !findquote <string>, !quote <number>, !when <number>, "
+                 "!findauthor <nick>, !votedel <quote>\n");
         fflush (ctx->channel);
         ctx->last_help = now;
     }
@@ -493,6 +702,18 @@ static void run_cmd (struct context *ctx, char *msg, char *cmd) {
         help (ctx);
     } else if (strstart (cmd, "!when")) {
         when (ctx, &cmd[strlen("!when") + 1]);
+    } else if (strstart (cmd, "!votedel")) {
+        votedel (ctx, msg, &cmd[strlen("!votedel") + 1]);
+    } else if (strstart (cmd, "!yes") ||
+               strstart (cmd, "!yep")) {
+        cast_vote (ctx, msg, 1);
+    } else if (!strcmp (cmd, "!no") ||
+               !strcmp (cmd, "!nop") ||
+               !strcmp (cmd, "!nope")) {
+        cast_vote (ctx, msg, 0);
+    } else if (strstart (cmd, "!delquote")) {
+        int n = extract_number (&cmd[strlen("!delquote") + 1]);
+        delete_quote (ctx, n);
     }
 }
 
@@ -534,35 +755,52 @@ int main (int argc, char **argv) {
     fseek (in, 0, SEEK_END);
     int pos = ftell (in);
 
-    struct context ctx;
-    ctx.last_quote = 0;
-    ctx.last_search = 0;
-    ctx.last_wrong_search = 0;
-    ctx.last_help = 0;
-    ctx.last_names = 0;
-    ctx.last_when = 0;
-    ctx.print_no = 1;
-    ctx.global_in = global_in;
-    ctx.global_out = global_out;
-    ctx.channel = out;
-    ctx.n_voiced = 0;
+    struct context *ctx = malloc (sizeof *ctx);
+    ctx->last_quote = 0;
+    ctx->last_search = 0;
+    ctx->last_wrong_search = 0;
+    ctx->last_help = 0;
+    ctx->last_names = 0;
+    ctx->last_when = 0;
+    ctx->print_no = 1;
+    ctx->global_in = global_in;
+    ctx->global_out = global_out;
+    ctx->channel = out;
+    ctx->n_voiced = 0;
+    ctx->vote_ts = 0;
+    ctx->vote_quote = 0;
+    for (int i = 0; i < MAX_VOTES; i++) {
+        memset (ctx->votes[0][i], 0, NICKNAME_SIZE);
+        memset (ctx->votes[1][i], 0, NICKNAME_SIZE);
+    }
+    ctx->n_votes[0] = 0;
+    ctx->n_votes[0] = 0;
+
+    fseek (global_in, 0, SEEK_END);
 
     while (1) {
         clearerr (in);
+        clearerr (global_in);
         memset (buffer, 0, sizeof buffer);
         if (fgets (buffer, sizeof buffer, in)) {
             sflush (buffer);
             char *cmd = find_message (buffer);
             if (cmd) {
-                run_cmd (&ctx, buffer, cmd);
+                run_cmd (ctx, buffer, cmd);
             }
+        /* } else if (fgets (buffer, sizeof buffer, global_in)) { */
+        /*     /\* check private messages for votes *\/ */
+        /*     sflush (buffer); */
+        /*     printf ("reveidv pm: %s\n", buffer); */
         } else {
+            end_vote (ctx);
             sleep (1);
         }
     }
 
     fclose (in);
     fclose (out);
+    free (ctx);
 
     return 0;
 }
