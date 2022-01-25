@@ -583,8 +583,6 @@ static void votedel (struct context *ctx, char *msg, char *quote) {
 static int voter_exists (struct context *ctx, char *id) {
     for (int y = 0; y < 2; y++) {
         for (int i = 0; i < ctx->n_votes[y]; i++) {
-            fprintf (ctx->channel, "comparing [%d] %s with %s\n", i, ctx->votes[y][i], id);
-            fflush (ctx->channel);
             if (!strcmp (ctx->votes[y][i], id))
                 return 1;
         }
@@ -592,12 +590,9 @@ static int voter_exists (struct context *ctx, char *id) {
     return 0;
 }
 
-static void cast_vote (struct context *ctx, char *msg, int which) {
-    char nickname[NICKNAME_SIZE] = {0};
+static void cast_vote (struct context *ctx, char nickname[NICKNAME_SIZE], int which) {
     char id[NICKNAME_SIZE] = {0};
     FILE *out = ctx->global_out;
-    copy_nickname (msg, nickname);
-    printf ("casting vote...\n");
 #if 0
 #ifdef PROD
     if (!authorized (ctx, nickname)) {
@@ -685,7 +680,20 @@ static void help (struct context *ctx) {
     }
 }
 
+static void run_priv_cmd (struct context *ctx, char nickname[NICKNAME_SIZE], char *cmd) {
+    if (strstart (cmd, "!yes") ||
+               strstart (cmd, "!yep")) {
+        cast_vote (ctx, nickname, 1);
+    } else if (strstart (cmd, "!no") ||
+               strstart (cmd, "!nop") ||
+               strstart (cmd, "!nope")) {
+        cast_vote (ctx, nickname, 0);
+    }
+}
+
 static void run_cmd (struct context *ctx, char *msg, char *cmd) {
+    char nickname[NICKNAME_SIZE] = {0};
+    copy_nickname (msg, nickname);
     if (strstart (cmd, "!addquote")) {
         addquote (ctx, msg, &cmd[strlen("!addquote") + 1]);
     } else if (!strcmp (cmd, "!randquote")) {
@@ -706,21 +714,34 @@ static void run_cmd (struct context *ctx, char *msg, char *cmd) {
         votedel (ctx, msg, &cmd[strlen("!votedel") + 1]);
     } else if (strstart (cmd, "!yes") ||
                strstart (cmd, "!yep")) {
-        cast_vote (ctx, msg, 1);
+        cast_vote (ctx, nickname, 1);
     } else if (!strcmp (cmd, "!no") ||
                !strcmp (cmd, "!nop") ||
                !strcmp (cmd, "!nope")) {
-        cast_vote (ctx, msg, 0);
-    } else if (strstart (cmd, "!delquote")) {
-        int n = extract_number (&cmd[strlen("!delquote") + 1]);
-        delete_quote (ctx, n);
+        cast_vote (ctx, nickname, 0);
+    /* } else if (strstart (cmd, "!delquote")) { */
+    /*     int n = extract_number (&cmd[strlen("!delquote") + 1]); */
+    /*     delete_quote (ctx, n); */
     }
 }
+
+static void handle_pm (struct context *ctx, char *msg) {
+    char nickname[NICKNAME_SIZE] = {0};
+    int n;
+    char test;
+    if (2 == sscanf (msg, "%*s :%s PRIVMSG "SELF" :%n%c", nickname, &n, &test)) {
+        int i;
+        for (i = 0; nickname[i] != '!' && nickname[i]; i++);
+        nickname[i] = 0;
+        run_priv_cmd (ctx, nickname, &msg[n]);
+    }
+}
+
 
 int main (int argc, char **argv) {
     char buffer[1024];
     char channel[256], in_path[256], out_path[256];
-    FILE *in = NULL, *out = NULL, *global_in = NULL, *global_out = NULL;
+    FILE *in = NULL, *out = NULL, *global_in = NULL, *global_out = NULL, *glob = NULL;
 
     strcpy (channel, CHANNEL);
 
@@ -733,6 +754,10 @@ int main (int argc, char **argv) {
     }
     if (!(global_in = fopen (SERVER "/out", "r"))) {
         perror ("fopen " SERVER "/out");
+        return 1;
+    }
+    if (!(glob = fopen (SERVER "/glob", "r"))) {
+        perror ("fopen " SERVER "/glob");
         return 1;
     }
 
@@ -752,6 +777,7 @@ int main (int argc, char **argv) {
     }
 
     srand (time (NULL));
+    fseek (glob, 0, SEEK_END);
     fseek (in, 0, SEEK_END);
     int pos = ftell (in);
 
@@ -776,11 +802,10 @@ int main (int argc, char **argv) {
     ctx->n_votes[0] = 0;
     ctx->n_votes[0] = 0;
 
-    fseek (global_in, 0, SEEK_END);
 
     while (1) {
         clearerr (in);
-        clearerr (global_in);
+        clearerr (glob);
         memset (buffer, 0, sizeof buffer);
         if (fgets (buffer, sizeof buffer, in)) {
             sflush (buffer);
@@ -788,18 +813,18 @@ int main (int argc, char **argv) {
             if (cmd) {
                 run_cmd (ctx, buffer, cmd);
             }
-        /* } else if (fgets (buffer, sizeof buffer, global_in)) { */
-        /*     /\* check private messages for votes *\/ */
-        /*     sflush (buffer); */
-        /*     printf ("reveidv pm: %s\n", buffer); */
+        } else if (fgets (buffer, sizeof buffer, glob)) {
+            sflush (buffer);
+            handle_pm (ctx, buffer);
         } else {
-            end_vote (ctx);
             sleep (1);
         }
+        end_vote (ctx);
     }
 
     fclose (in);
     fclose (out);
+    fclose (glob);
     free (ctx);
 
     return 0;
