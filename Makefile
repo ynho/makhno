@@ -9,7 +9,7 @@ $(PROD): $(OBJS_PROD)
 $(TEST): $(OBJS_TEST)
 	$(CC) $(LDFLAGS) $(OBJS_TEST) -o $@
 $(OBJS_PROD): main.c
-	$(CC) -DPROD -c $^ -o $@
+	$(CC) -DPROD -g -c $^ -o $@
 $(OBJS_TEST): main.c
 	$(CC) -g -c $^ -o $@
 

@@ -572,8 +572,8 @@ static void votedel (struct context *ctx, char *msg, char *quote) {
         ctx->vote_quote = n;
         ctx->n_votes[0] = ctx->n_votes[1] = 0;
         fprintf (ctx->channel, "%s has called a vote to delete quote %d. Type !yes or !no "
-                 "to cast your vote. The quote will be "
-                 "deleted if it receives a majority with at least %d in favor. Vote will remain"
+                 "to cast your vote (booth in PM). The quote will be "
+                 "deleted if it receives a majority, and at least %d total yes votes. Vote"
                  " open for %d seconds.\n",
                  nickname, n, MIN_VOTES_TO_DELETE, VOTE_DURATION);
         fflush (ctx->channel);
@@ -657,10 +657,12 @@ static void end_vote (struct context *ctx) {
             if (ctx->n_votes[1] >= MIN_VOTES_TO_DELETE &&
                 ctx->n_votes[1] > ctx->n_votes[0]) {
                 delete_quote (ctx, ctx->vote_quote);
-                fprintf (ctx->channel, "vote passed, quote %d deleted\n", ctx->vote_quote);
+                fprintf (ctx->channel, "vote passed with %d for, %d against. quote %d deleted\n",
+                         ctx->n_votes[1], ctx->n_votes[0], ctx->vote_quote);
                 fflush (ctx->channel);
             } else {
-                fprintf (ctx->channel, "vote failed, quote %d remains\n", ctx->vote_quote);
+                fprintf (ctx->channel, "vote failed with %d for, %d against. quote %d remains\n",
+                         ctx->n_votes[1], ctx->n_votes[0], ctx->vote_quote);
                 fflush (ctx->channel);
             }
             ctx->vote_quote = 0;
