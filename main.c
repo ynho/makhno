@@ -714,8 +714,8 @@ static void run_cmd (struct context *ctx, char *msg, char *cmd) {
         when (ctx, &cmd[strlen("!when") + 1]);
     } else if (strstart (cmd, "!votedel")) {
         votedel (ctx, msg, &cmd[strlen("!votedel") + 1]);
-    } else if (strstart (cmd, "!yes") ||
-               strstart (cmd, "!yep")) {
+    } else if (!strcmp (cmd, "!yes") ||
+               !strcmp (cmd, "!yep")) {
         cast_vote (ctx, nickname, 1);
     } else if (!strcmp (cmd, "!no") ||
                !strcmp (cmd, "!nop") ||
@@ -728,7 +728,7 @@ static void run_cmd (struct context *ctx, char *msg, char *cmd) {
 }
 
 static void handle_pm (struct context *ctx, char *msg) {
-    char nickname[NICKNAME_SIZE] = {0};
+    char nickname[QUOTE_SIZE] = {0};
     int n;
     char test;
     if (2 == sscanf (msg, "%*s :%s PRIVMSG "SELF" :%n%c", nickname, &n, &test)) {
@@ -741,7 +741,7 @@ static void handle_pm (struct context *ctx, char *msg) {
 
 
 int main (int argc, char **argv) {
-    char buffer[1024];
+    char buffer[QUOTE_SIZE];
     char channel[256], in_path[256], out_path[256];
     FILE *in = NULL, *out = NULL, *global_in = NULL, *global_out = NULL, *glob = NULL;
 
