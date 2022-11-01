@@ -224,6 +224,10 @@ static void addquote (struct context *ctx, char *msg, char *quote) {
     }
 }
 
+static float randf (void) {
+    return (float)rand () / RAND_MAX;
+}
+
 static int randrange (int a, int b) {
     float r = (float)rand () / RAND_MAX;
     r *= (b - a);
@@ -385,24 +389,32 @@ static char* tolowers (char *s) {
     return s;
 }
 
-static int match (FILE *q, char *pattern, int matches[MAX_MATCHES], int *num, char *last, int author) {
+
+static int next_match (FILE *q, char *pattern, char *quote, int author) {
     int i = 0, s;
     char buffer[QUOTE_SIZE] = {0};
     char decap[QUOTE_SIZE] = {0};
-    *num = 0;
     while (fgets (buffer, QUOTE_SIZE, q)) {
         char nickname[NICKNAME_SIZE] = {0};
         char *extract = author ? extract_nickname (buffer, nickname) : extract_quote (buffer);
         int number = extract_number (buffer);
         strcpy (decap, extract);
         if (match_pattern (tolowers (decap), pattern)) {
-            matches[i] = number;
-            s = i;
-            strcpy (last, buffer);
-            i = (i + 1) % MAX_MATCHES;
-            *num = *num + 1;
+            strcpy (quote, buffer);
+            return number;
         }
         memset (buffer, 0, sizeof buffer);
+    }
+    return -1;
+}
+
+static int matches (FILE *q, char *pattern, int matches[MAX_MATCHES], int *num, char *last, int author) {
+    int i = 0, number;
+    *num = 0;
+    while ((number = next_match (q, pattern, last, author)) > -1) {
+        matches[i] = number;
+        i = (i + 1) % MAX_MATCHES;
+        *num = *num + 1;
     }
     return *num <= MAX_MATCHES ? 0 : i;
 }
@@ -420,11 +432,11 @@ static void findquote (struct context *ctx, char *pattern, int author) {
         } else {
             FILE *q = NULL;
             if (q = fopen (QUOTES, "r")) {
-                int matches[MAX_MATCHES], num;
+                int match[MAX_MATCHES], num;
                 char last[QUOTE_SIZE] = {0};
-                for (int i = 0; i < MAX_MATCHES; i++) matches[i] = 0;
+                for (int i = 0; i < MAX_MATCHES; i++) match[i] = 0;
                 tolowers (pattern);
-                int first = match (q, pattern, matches, &num, last, author);
+                int first = matches (q, pattern, match, &num, last, author);
                 if (num > 0) {
                     if (num > MAX_MATCHES) {
                         fprintf (ctx->channel, "%d matches, last %d:", num, MAX_MATCHES);
@@ -433,10 +445,51 @@ static void findquote (struct context *ctx, char *pattern, int author) {
                         fprintf (ctx->channel, "%d matches:", num);
                     }
                     for (int i = 0; i < num; i++)
-                        fprintf (ctx->channel, " %d", matches[(i + first) % MAX_MATCHES]);
+                        fprintf (ctx->channel, " %d", match[(i + first) % MAX_MATCHES]);
                     fprintf (ctx->channel, "\n");
                     fflush (ctx->channel);
-                    printquote_from_string (ctx->channel, matches[(first + num - 1) % MAX_MATCHES], last);
+                    printquote_from_string (ctx->channel, match[(first + num - 1) % MAX_MATCHES], last);
+                } else {
+                    fprintf (ctx->channel, "pattern not found\n");
+                    fflush (ctx->channel);
+                }
+                fclose (q);
+            } else {
+                noquotes (ctx);
+            }
+            ctx->last_search = now;
+        }
+    }
+}
+
+static void randfind (struct context *ctx, char *pattern, int author) {
+    time_t now = time (NULL);
+    if (now - ctx->last_quote >= INTERVAL) {
+        if (strlen (pattern) < MIN_SEARCH_PATTERN) {
+            if (now - ctx->last_wrong_search >= INTERVAL) {
+                fprintf (ctx->channel, "search pattern must contain at least %d characters\n",
+                         MIN_SEARCH_PATTERN);
+                fflush (ctx->channel);
+                ctx->last_wrong_search = now;
+            }
+        } else {
+            FILE *q = NULL;
+            if (q = fopen (QUOTES, "r")) {
+                int number = -1, n, i = 0;
+                float prob = 1.1;
+                char quote[QUOTE_SIZE] = {0};
+                char buffer[QUOTE_SIZE] = {0};
+                tolowers (pattern);
+                while ((n = next_match (q, pattern, buffer, author)) > -1) {
+                    if (randf () <= prob) {
+                        number = n;
+                        strcpy (quote, buffer);
+                    }
+                    i++;
+                    prob = 1.0 / (i + 1);
+                }
+                if (number > -1) {
+                    printquote_from_string (ctx->channel, number, quote);
                 } else {
                     fprintf (ctx->channel, "pattern not found\n");
                     fflush (ctx->channel);
@@ -674,9 +727,9 @@ static void end_vote (struct context *ctx) {
 static void help (struct context *ctx) {
     time_t now = time (NULL);
     if (now - ctx->last_help >= INTERVAL) {
-        fprintf (ctx->channel, "commands: !addquote <quote>, !randquote, "
-                 "!lastquote, !findquote <string>, !quote <number>, !when <number>, "
-                 "!findauthor <nick>, !votedel <quote>\n");
+        fprintf (ctx->channel, "commands: !addquote <quote>, !randquote [pattern], "
+                 "!lastquote, !findquote <pattern>, !quote <number>, !when <number>, "
+                 "!findauthor <nick>, !randauthor <nick>, !votedel <number>\n");
         fflush (ctx->channel);
         ctx->last_help = now;
     }
@@ -684,7 +737,7 @@ static void help (struct context *ctx) {
 
 static void run_priv_cmd (struct context *ctx, char nickname[NICKNAME_SIZE], char *cmd) {
     if (strstart (cmd, "!yes") ||
-               strstart (cmd, "!yep")) {
+        strstart (cmd, "!yep")) {
         cast_vote (ctx, nickname, 1);
     } else if (strstart (cmd, "!no") ||
                strstart (cmd, "!nop") ||
@@ -693,19 +746,38 @@ static void run_priv_cmd (struct context *ctx, char nickname[NICKNAME_SIZE], cha
     }
 }
 
+char* optional_arg (char *cmd) {
+    int i = 0;
+    if (cmd[i] == ' ') {
+        i++;
+        while (cmd[i]) {
+            if (cmd[i] != ' ')
+                return &cmd[i];
+            i++;
+        }
+    }
+    return NULL;
+}
+
 static void run_cmd (struct context *ctx, char *msg, char *cmd) {
     char nickname[NICKNAME_SIZE] = {0};
     copy_nickname (msg, nickname);
     if (strstart (cmd, "!addquote")) {
         addquote (ctx, msg, &cmd[strlen("!addquote") + 1]);
-    } else if (!strcmp (cmd, "!randquote")) {
-        randquote (ctx, msg);
+    } else if (strstart (cmd, "!randquote")) {
+        char *arg = optional_arg (&cmd[strlen("!randquote")]);
+        if (arg)
+            randfind (ctx, arg, 0);
+        else
+            randquote (ctx, msg);
     } else if (!strcmp (cmd, "!lastquote")) {
         lastquote (ctx);
     } else if (strstart (cmd, "!findquote")) {
         findquote (ctx, &cmd[strlen("!findquote") + 1], 0);
     } else if (strstart (cmd, "!findauthor")) {
         findquote (ctx, &cmd[strlen("!findauthor") + 1], 1);
+    } else if (strstart (cmd, "!randauthor")) {
+        randfind (ctx, &cmd[strlen("!randauthor") + 1], 1);
     } else if (strstart (cmd, "!quote")) {
         quote (ctx, &cmd[strlen("!quote") + 1]);
     } else if (!strcmp (cmd, "!help")) {
