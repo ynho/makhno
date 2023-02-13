@@ -72,9 +72,9 @@ static int copy_nickname (char *input, char *output) {
     return 1;
 }
 
-static int get_timestamp (char *msg, char *number) {
+static int get_timestamp (char *msg, char number[32]) {
     int i = 0;
-    while (*msg <= '9' && *msg >= '0')
+    while (*msg <= '9' && *msg >= '0' && i < 32)
         number[i++] = *msg++;
     return i;
 }
